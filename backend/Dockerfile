@@ -19,10 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p temp outputs
+RUN mkdir -p temp outputs uploads
 
-# Expose port
-EXPOSE 8000
+# Expose port (Cloud Run will set PORT env variable)
+ENV PORT=8000
+EXPOSE $PORT
 
-# Run the application
-CMD ["python", "main.py"] 
+# Run the application with uvicorn for production
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1 
