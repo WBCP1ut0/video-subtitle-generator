@@ -1,0 +1,14 @@
+# Exclude backend from frontend deployment
+backend/
+
+# Exclude development files
+*.log
+.env.local
+.env
+
+# Exclude build artifacts
+.next/
+node_modules/
+
+# Exclude other large directories
+.git/ 
