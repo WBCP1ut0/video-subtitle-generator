@@ -1,6 +1,7 @@
 import os
 import tempfile
 import asyncio
+import gc
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ import ffmpeg
 import json
 from pathlib import Path
 import yt_dlp
+import torch
 
 # Import translation services
 from services.translation import TranslationService
@@ -43,13 +45,15 @@ os.makedirs("uploads", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
 os.makedirs("temp", exist_ok=True)
 
-@app.on_event("startup")
-async def startup_event():
-    """Load Whisper model on startup"""
+def get_whisper_model():
+    """Lazy load Whisper model when needed"""
     global whisper_model
-    print("Loading Whisper model...")
-    whisper_model = whisper.load_model("base")  # Options: tiny, base, small, medium, large
-    print("Whisper model loaded successfully!")
+    if whisper_model is None:
+        print("Loading Whisper model...")
+        # Use CPU to save memory, and tiny model for lowest memory usage
+        whisper_model = whisper.load_model("tiny", device="cpu")  # Tiny model uses ~39MB vs 139MB for base
+        print("Whisper model loaded successfully!")
+    return whisper_model
 
 @app.get("/")
 async def root():
@@ -57,7 +61,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "whisper_loaded": whisper_model is not None}
+    return {"status": "healthy", "whisper_ready": True}
 
 @app.post("/api/transcribe")
 async def transcribe_video(
@@ -70,8 +74,8 @@ async def transcribe_video(
     if not video and not video_url:
         raise HTTPException(status_code=400, detail="Either video file or video URL must be provided")
     
-    if whisper_model is None:
-        raise HTTPException(status_code=500, detail="Whisper model not loaded")
+    # Get Whisper model (lazy load)
+    model = get_whisper_model()
     
     try:
         # Handle video file or URL
@@ -90,7 +94,7 @@ async def transcribe_video(
         
         # Transcribe with Whisper
         print(f"Transcribing audio: {audio_path}")
-        result = whisper_model.transcribe(
+        result = model.transcribe(
             audio_path, 
             language=language if language != "auto" else None,
             task="transcribe"
@@ -108,6 +112,11 @@ async def transcribe_video(
         # Cleanup temporary files
         background_tasks.add_task(cleanup_file, video_path)
         background_tasks.add_task(cleanup_file, audio_path)
+        
+        # Force garbage collection to free memory
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return {
             "segments": segments,
