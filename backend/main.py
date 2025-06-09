@@ -63,6 +63,40 @@ async def root():
 async def health_check():
     return {"status": "healthy", "whisper_ready": True}
 
+@app.get("/test-download")
+async def test_download():
+    """Test video download functionality"""
+    try:
+        # Test with a simple, known working URL
+        test_url = "https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4"
+        
+        ydl_opts = {
+            'outtmpl': 'temp/test_video.%(ext)s',
+            'format': 'best[height<=720]/best/worst',
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)  # Just get info, don't download
+            
+        return {
+            "status": "success",
+            "download_working": True,
+            "video_info": {
+                "title": info.get("title", "Unknown"),
+                "duration": info.get("duration", "Unknown"),
+                "formats_available": len(info.get("formats", []))
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "download_working": False,
+            "error": str(e)
+        }
+
 @app.post("/api/transcribe")
 async def transcribe_video(
     background_tasks: BackgroundTasks,
