@@ -50,12 +50,20 @@ os.makedirs("outputs", exist_ok=True)
 os.makedirs("temp", exist_ok=True)
 
 def get_whisper_model():
-    """Check if we should use OpenAI API or local model"""
+    """Check which speech-to-text service to use"""
     openai_key = os.getenv("OPENAI_API_KEY")
+    google_key = os.getenv("GOOGLE_CLOUD_API_KEY")
+    assemblyai_key = os.getenv("ASSEMBLYAI_API_KEY")
     
     if openai_key:
         print("Using OpenAI Whisper API (memory efficient)")
         return "openai_api"
+    elif assemblyai_key:
+        print("Using AssemblyAI API (memory efficient)")
+        return "assemblyai_api"
+    elif google_key:
+        print("Using Google Cloud Speech-to-Text API (memory efficient)")
+        return "google_speech_api"
     
     # Fallback to local model
     global whisper_model
@@ -117,6 +125,170 @@ def transcribe_with_openai_api(audio_path: str, language: str):
         
     except Exception as e:
         raise Exception(f"OpenAI Whisper API failed: {e}")
+
+def transcribe_with_google_api(audio_path: str, language: str):
+    """Transcribe audio using Google Cloud Speech-to-Text API"""
+    try:
+        from google.cloud import speech
+        
+        # Initialize the client
+        client = speech.SpeechClient()
+        
+        # Load audio file
+        with open(audio_path, "rb") as audio_file:
+            content = audio_file.read()
+        
+        audio = speech.RecognitionAudio(content=content)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000,
+            language_code=language if language != "auto" else "en-US",
+            enable_word_time_offsets=True,
+            enable_automatic_punctuation=True,
+        )
+        
+        # Perform the transcription
+        response = client.recognize(config=config, audio=audio)
+        
+        # Convert Google API response to match Whisper format
+        full_text = ""
+        segments = []
+        
+        for result in response.results:
+            alternative = result.alternatives[0]
+            full_text += alternative.transcript + " "
+            
+            if alternative.words:
+                # Create segments from word timings
+                segment_text = alternative.transcript
+                start_time = alternative.words[0].start_time.total_seconds()
+                end_time = alternative.words[-1].end_time.total_seconds()
+                
+                segments.append({
+                    "start": start_time,
+                    "end": end_time,
+                    "text": segment_text.strip()
+                })
+            else:
+                # Fallback segment
+                segments.append({
+                    "start": 0.0,
+                    "end": 0.0,
+                    "text": alternative.transcript.strip()
+                })
+        
+        result = {
+            "text": full_text.strip(),
+            "language": language,
+            "segments": segments
+        }
+        
+        return result
+        
+    except Exception as e:
+        raise Exception(f"Google Cloud Speech API failed: {e}")
+
+def transcribe_with_assemblyai_api(audio_path: str, language: str):
+    """Transcribe audio using AssemblyAI API"""
+    try:
+        import requests
+        import time
+        
+        api_key = os.getenv("ASSEMBLYAI_API_KEY")
+        
+        # Upload audio file
+        headers = {"authorization": api_key}
+        
+        with open(audio_path, "rb") as f:
+            response = requests.post(
+                "https://api.assemblyai.com/v2/upload",
+                headers=headers,
+                files={"file": f}
+            )
+        
+        audio_url = response.json()["upload_url"]
+        
+        # Request transcription
+        transcript_request = {
+            "audio_url": audio_url,
+            "language_code": language if language != "auto" else "en",
+            "punctuate": True,
+            "format_text": True
+        }
+        
+        response = requests.post(
+            "https://api.assemblyai.com/v2/transcript",
+            headers=headers,
+            json=transcript_request
+        )
+        
+        transcript_id = response.json()["id"]
+        
+        # Poll for completion
+        while True:
+            response = requests.get(
+                f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
+                headers=headers
+            )
+            
+            status = response.json()["status"]
+            
+            if status == "completed":
+                transcript_data = response.json()
+                break
+            elif status == "error":
+                raise Exception(f"AssemblyAI transcription failed: {response.json().get('error', 'Unknown error')}")
+            
+            time.sleep(2)
+        
+        # Convert AssemblyAI response to match Whisper format
+        segments = []
+        if "words" in transcript_data and transcript_data["words"]:
+            # Group words into segments (roughly every 5-10 seconds)
+            current_segment = {"start": 0, "end": 0, "text": ""}
+            segment_duration = 10000  # 10 seconds in milliseconds
+            
+            for word in transcript_data["words"]:
+                if current_segment["text"] == "":
+                    current_segment["start"] = word["start"] / 1000.0
+                
+                current_segment["text"] += word["text"] + " "
+                current_segment["end"] = word["end"] / 1000.0
+                
+                # Check if we should start a new segment
+                if (word["end"] - (current_segment["start"] * 1000)) > segment_duration:
+                    segments.append({
+                        "start": current_segment["start"],
+                        "end": current_segment["end"],
+                        "text": current_segment["text"].strip()
+                    })
+                    current_segment = {"start": 0, "end": 0, "text": ""}
+            
+            # Add the last segment
+            if current_segment["text"]:
+                segments.append({
+                    "start": current_segment["start"],
+                    "end": current_segment["end"],
+                    "text": current_segment["text"].strip()
+                })
+        else:
+            # Fallback segment
+            segments.append({
+                "start": 0.0,
+                "end": 0.0,
+                "text": transcript_data.get("text", "")
+            })
+        
+        result = {
+            "text": transcript_data.get("text", ""),
+            "language": language,
+            "segments": segments
+        }
+        
+        return result
+        
+    except Exception as e:
+        raise Exception(f"AssemblyAI API failed: {e}")
 
 @app.get("/")
 async def root():
@@ -208,6 +380,12 @@ async def transcribe_video(
             if model == "openai_api":
                 # Use OpenAI Whisper API (memory efficient)
                 result = transcribe_with_openai_api(audio_path, language)
+            elif model == "assemblyai_api":
+                # Use AssemblyAI API (memory efficient)
+                result = transcribe_with_assemblyai_api(audio_path, language)
+            elif model == "google_speech_api":
+                # Use Google Cloud Speech-to-Text API (memory efficient)
+                result = transcribe_with_google_api(audio_path, language)
             else:
                 # Use local model
                 result = model.transcribe(
