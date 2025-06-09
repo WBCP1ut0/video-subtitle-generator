@@ -49,10 +49,21 @@ def get_whisper_model():
     """Lazy load Whisper model when needed"""
     global whisper_model
     if whisper_model is None:
-        print("Loading Whisper model...")
-        # Use CPU to save memory, and tiny model for lowest memory usage
-        whisper_model = whisper.load_model("tiny", device="cpu")  # Tiny model uses ~39MB vs 139MB for base
-        print("Whisper model loaded successfully!")
+        try:
+            print("Loading Whisper tiny model...")
+            
+            # Force CPU usage and minimal memory
+            import os
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Disable CUDA
+            
+            # Load the smallest model with explicit CPU device
+            whisper_model = whisper.load_model("tiny", device="cpu", download_root="./models")
+            print(f"Whisper model loaded successfully! Model device: {next(whisper_model.parameters()).device}")
+            
+        except Exception as e:
+            print(f"Failed to load Whisper model: {e}")
+            raise Exception(f"Whisper model loading failed: {e}")
+    
     return whisper_model
 
 @app.get("/")
@@ -63,38 +74,39 @@ async def root():
 async def health_check():
     return {"status": "healthy", "whisper_ready": True}
 
-@app.get("/test-download")
-async def test_download():
-    """Test video download functionality"""
+@app.get("/test-whisper-model")
+async def test_whisper_model():
+    """Test if Whisper model can be loaded without crashing"""
     try:
-        # Test with a simple, known working URL
-        test_url = "https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4"
+        import sys
+        import psutil
+        import os
         
-        ydl_opts = {
-            'outtmpl': 'temp/test_video.%(ext)s',
-            'format': 'best[height<=720]/best/worst',
-            'no_warnings': True,
-            'extract_flat': False,
-        }
+        # Get current memory usage
+        process = psutil.Process(os.getpid())
+        memory_before = process.memory_info().rss / 1024 / 1024  # MB
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(test_url, download=False)  # Just get info, don't download
-            
+        # Try to load the model
+        model = get_whisper_model()
+        
+        # Get memory usage after loading
+        memory_after = process.memory_info().rss / 1024 / 1024  # MB
+        
         return {
             "status": "success",
-            "download_working": True,
-            "video_info": {
-                "title": info.get("title", "Unknown"),
-                "duration": info.get("duration", "Unknown"),
-                "formats_available": len(info.get("formats", []))
-            }
+            "whisper_model_loaded": True,
+            "memory_before_mb": round(memory_before, 2),
+            "memory_after_mb": round(memory_after, 2),
+            "memory_used_mb": round(memory_after - memory_before, 2),
+            "python_version": sys.version
         }
         
     except Exception as e:
         return {
             "status": "error",
-            "download_working": False,
-            "error": str(e)
+            "whisper_model_loaded": False,
+            "error": str(e),
+            "error_type": type(e).__name__
         }
 
 @app.post("/api/transcribe")
@@ -108,8 +120,14 @@ async def transcribe_video(
     if not video and not video_url:
         raise HTTPException(status_code=400, detail="Either video file or video URL must be provided")
     
-    # Get Whisper model (lazy load)
-    model = get_whisper_model()
+    try:
+        # Get Whisper model (lazy load)
+        print("Getting Whisper model...")
+        model = get_whisper_model()
+        print("Whisper model ready")
+    except Exception as e:
+        print(f"Failed to get Whisper model: {e}")
+        raise HTTPException(status_code=500, detail=f"Whisper model initialization failed: {str(e)}")
     
     try:
         # Handle video file or URL
