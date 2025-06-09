@@ -13,6 +13,10 @@ import json
 from pathlib import Path
 import yt_dlp
 import torch
+import openai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Import translation services
 from services.translation import TranslationService
@@ -46,14 +50,20 @@ os.makedirs("outputs", exist_ok=True)
 os.makedirs("temp", exist_ok=True)
 
 def get_whisper_model():
-    """Lazy load Whisper model when needed"""
+    """Check if we should use OpenAI API or local model"""
+    openai_key = os.getenv("OPENAI_API_KEY")
+    
+    if openai_key:
+        print("Using OpenAI Whisper API (memory efficient)")
+        return "openai_api"
+    
+    # Fallback to local model
     global whisper_model
     if whisper_model is None:
         try:
-            print("Loading Whisper tiny model...")
+            print("Loading local Whisper tiny model...")
             
             # Force CPU usage and minimal memory
-            import os
             os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Disable CUDA
             
             # Load the smallest model with explicit CPU device
@@ -65,6 +75,48 @@ def get_whisper_model():
             raise Exception(f"Whisper model loading failed: {e}")
     
     return whisper_model
+
+def transcribe_with_openai_api(audio_path: str, language: str):
+    """Transcribe audio using OpenAI Whisper API"""
+    try:
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        with open(audio_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language=language if language != "auto" else None,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"]
+            )
+        
+        # Convert OpenAI API response to match local Whisper format
+        result = {
+            "text": transcript.text,
+            "language": getattr(transcript, 'language', language),
+            "segments": []
+        }
+        
+        # Convert segments
+        if hasattr(transcript, 'segments') and transcript.segments:
+            for segment in transcript.segments:
+                result["segments"].append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text
+                })
+        else:
+            # If no segments, create one for the whole text
+            result["segments"].append({
+                "start": 0.0,
+                "end": getattr(transcript, 'duration', 0.0),
+                "text": transcript.text
+            })
+        
+        return result
+        
+    except Exception as e:
+        raise Exception(f"OpenAI Whisper API failed: {e}")
 
 @app.get("/")
 async def root():
@@ -150,15 +202,20 @@ async def transcribe_video(
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
             raise Exception("Audio extraction produced empty file")
         
-        # Transcribe with Whisper
+        # Transcribe with Whisper (API or local)
         print(f"Transcribing audio: {audio_path}")
         try:
-            result = model.transcribe(
-                audio_path, 
-                language=language if language != "auto" else None,
-                task="transcribe",
-                verbose=False  # Reduce console output
-            )
+            if model == "openai_api":
+                # Use OpenAI Whisper API (memory efficient)
+                result = transcribe_with_openai_api(audio_path, language)
+            else:
+                # Use local model
+                result = model.transcribe(
+                    audio_path, 
+                    language=language if language != "auto" else None,
+                    task="transcribe",
+                    verbose=False  # Reduce console output
+                )
             print(f"Transcription completed. Found {len(result.get('segments', []))} segments")
         except Exception as whisper_error:
             print(f"Whisper transcription error: {whisper_error}")
