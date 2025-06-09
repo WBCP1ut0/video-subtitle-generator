@@ -90,15 +90,27 @@ async def transcribe_video(
             video_path = await download_video_from_url(video_url)
         
         # Extract audio from video
+        print(f"Extracting audio from: {video_path}")
         audio_path = extract_audio(video_path)
+        print(f"Audio extracted to: {audio_path}")
+        
+        # Verify audio file exists and has size
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+            raise Exception("Audio extraction produced empty file")
         
         # Transcribe with Whisper
         print(f"Transcribing audio: {audio_path}")
-        result = model.transcribe(
-            audio_path, 
-            language=language if language != "auto" else None,
-            task="transcribe"
-        )
+        try:
+            result = model.transcribe(
+                audio_path, 
+                language=language if language != "auto" else None,
+                task="transcribe",
+                verbose=False  # Reduce console output
+            )
+            print(f"Transcription completed. Found {len(result.get('segments', []))} segments")
+        except Exception as whisper_error:
+            print(f"Whisper transcription error: {whisper_error}")
+            raise Exception(f"Whisper transcription failed: {whisper_error}")
         
         # Convert to subtitle format
         segments = []
@@ -216,7 +228,9 @@ async def download_video_from_url(url: str) -> str:
         
         ydl_opts = {
             'outtmpl': f'{output_path}.%(ext)s',
-            'format': 'best[height<=720]',  # Limit quality to reduce processing time
+            'format': 'best[height<=720]/best/worst',  # More flexible format selection
+            'no_warnings': True,
+            'extract_flat': False,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -233,17 +247,29 @@ def extract_audio(video_path: str) -> str:
     audio_path = video_path.rsplit('.', 1)[0] + '_audio.wav'
     
     try:
+        # First try with standard settings
         (
             ffmpeg
             .input(video_path)
             .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000')
             .overwrite_output()
-            .run(quiet=True)
+            .run(quiet=True, capture_stdout=True, capture_stderr=True)
         )
         return audio_path
         
     except ffmpeg.Error as e:
-        raise Exception(f"Audio extraction failed: {e}")
+        # Try with more compatible settings as fallback
+        try:
+            (
+                ffmpeg
+                .input(video_path)
+                .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000', strict='experimental')
+                .overwrite_output()
+                .run(quiet=True, capture_stdout=True, capture_stderr=True)
+            )
+            return audio_path
+        except ffmpeg.Error as e2:
+            raise Exception(f"Audio extraction failed: {e2}")
 
 def create_srt_file(subtitles: List[dict], language: str) -> str:
     """Create SRT file from subtitle data"""
