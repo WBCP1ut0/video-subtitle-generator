@@ -54,6 +54,7 @@ def get_whisper_model():
     openai_key = os.getenv("OPENAI_API_KEY")
     google_key = os.getenv("GOOGLE_CLOUD_API_KEY")
     assemblyai_key = os.getenv("ASSEMBLYAI_API_KEY")
+    use_free_api = os.getenv("USE_FREE_SPEECH_API", "true").lower() == "true"
     
     if openai_key:
         print("Using OpenAI Whisper API (memory efficient)")
@@ -64,6 +65,16 @@ def get_whisper_model():
     elif google_key:
         print("Using Google Cloud Speech-to-Text API (memory efficient)")
         return "google_speech_api"
+    elif use_free_api:
+        print("Using free Google Web Speech API (memory efficient)")
+        return "free_google_speech"
+    
+    # Try lightweight Hugging Face model as another free option
+    try:
+        print("Trying lightweight Hugging Face Wav2Vec2 model...")
+        return "wav2vec2_model"
+    except:
+        pass
     
     # Fallback to local model
     global whisper_model
@@ -290,6 +301,94 @@ def transcribe_with_assemblyai_api(audio_path: str, language: str):
     except Exception as e:
         raise Exception(f"AssemblyAI API failed: {e}")
 
+def transcribe_with_free_google_api(audio_path: str, language: str):
+    """Transcribe audio using free Google Web Speech API via SpeechRecognition library"""
+    try:
+        import speech_recognition as sr
+        
+        # Initialize recognizer
+        r = sr.Recognizer()
+        
+        # Load audio file
+        with sr.AudioFile(audio_path) as source:
+            # Adjust for ambient noise
+            r.adjust_for_ambient_noise(source)
+            audio = r.listen(source)
+        
+        # Recognize speech using Google Web Speech API (free)
+        try:
+            text = r.recognize_google(audio, language=language if language != "auto" else None)
+        except sr.UnknownValueError:
+            text = ""
+        except sr.RequestError as e:
+            raise Exception(f"Could not request results from Google Speech Recognition service: {e}")
+        
+        # Since the free API doesn't provide timestamps, create a single segment
+        result = {
+            "text": text,
+            "language": language,
+            "segments": [{
+                "start": 0.0,
+                "end": 0.0,  # We don't have duration info
+                "text": text
+            }] if text else []
+        }
+        
+        return result
+        
+    except Exception as e:
+        raise Exception(f"Free Google Speech API failed: {e}")
+
+def transcribe_with_wav2vec2(audio_path: str, language: str):
+    """Transcribe audio using lightweight Hugging Face Wav2Vec2 model"""
+    try:
+        from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
+        import librosa
+        import torch
+        
+        # Use CPU and a smaller model to minimize memory usage
+        model_name = "facebook/wav2vec2-base-960h"  # Smaller than large models
+        
+        # Load model and tokenizer (this will be cached after first use)
+        tokenizer = Wav2Vec2Tokenizer.from_pretrained(model_name)
+        model = Wav2Vec2ForCTC.from_pretrained(model_name)
+        
+        # Force CPU usage
+        model = model.to("cpu")
+        
+        # Load and preprocess audio
+        audio_input, sample_rate = librosa.load(audio_path, sr=16000)
+        
+        # Tokenize
+        inputs = tokenizer(audio_input, sampling_rate=16000, return_tensors="pt", padding=True)
+        
+        # Perform inference
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+        
+        # Decode
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = tokenizer.batch_decode(predicted_ids)[0]
+        
+        # Clean up the transcription
+        transcription = transcription.lower().strip()
+        
+        # Create result in Whisper format
+        result = {
+            "text": transcription,
+            "language": language,
+            "segments": [{
+                "start": 0.0,
+                "end": len(audio_input) / sample_rate,
+                "text": transcription
+            }] if transcription else []
+        }
+        
+        return result
+        
+    except Exception as e:
+        raise Exception(f"Wav2Vec2 model failed: {e}")
+
 @app.get("/")
 async def root():
     return {"message": "Video Subtitle Generator API"}
@@ -386,6 +485,12 @@ async def transcribe_video(
             elif model == "google_speech_api":
                 # Use Google Cloud Speech-to-Text API (memory efficient)
                 result = transcribe_with_google_api(audio_path, language)
+            elif model == "free_google_speech":
+                # Use free Google Web Speech API (memory efficient)
+                result = transcribe_with_free_google_api(audio_path, language)
+            elif model == "wav2vec2_model":
+                # Use lightweight Hugging Face model (free)
+                result = transcribe_with_wav2vec2(audio_path, language)
             else:
                 # Use local model
                 result = model.transcribe(
