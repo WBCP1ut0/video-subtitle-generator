@@ -22,7 +22,12 @@ app = FastAPI(title="Video Subtitle Generator API", version="1.0.0")
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server
+    allow_origins=[
+        "http://localhost:3000",  # Next.js dev server
+        "https://www.instantsubtitles.net",  # Custom domain
+        "https://vid-mv7wph6hu-muhammad-ahmads-projects-d6bd9dee.vercel.app",  # Vercel domain
+        "https://*.vercel.app",  # Any Vercel subdomain
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
