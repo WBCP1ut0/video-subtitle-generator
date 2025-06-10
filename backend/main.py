@@ -205,7 +205,10 @@ def transcribe_with_assemblyai_api(audio_path: str, language: str):
         import requests
         import time
         
-        api_key = os.getenv("ASSEMBLYAI_API_KEY")
+        api_key = os.getenv("ASSEMBLYAI_API_KEY") or "9ba12117e88d477097bc723768db6eb4"
+        
+        print(f"AssemblyAI: Using API key: {api_key[:20]}...")
+        print(f"AssemblyAI: Processing audio file: {audio_path}")
         
         # Upload audio file
         headers = {"authorization": api_key}
@@ -217,7 +220,12 @@ def transcribe_with_assemblyai_api(audio_path: str, language: str):
                 files={"file": f}
             )
         
-        audio_url = response.json()["upload_url"]
+        if response.status_code != 200:
+            raise Exception(f"File upload failed: {response.status_code} - {response.text}")
+        
+        upload_response = response.json()
+        audio_url = upload_response["upload_url"]
+        print(f"AssemblyAI: File uploaded successfully: {audio_url}")
         
         # Request transcription
         transcript_request = {
@@ -233,7 +241,12 @@ def transcribe_with_assemblyai_api(audio_path: str, language: str):
             json=transcript_request
         )
         
-        transcript_id = response.json()["id"]
+        if response.status_code != 200:
+            raise Exception(f"Transcription request failed: {response.status_code} - {response.text}")
+        
+        transcript_response = response.json()
+        transcript_id = transcript_response["id"]
+        print(f"AssemblyAI: Transcription started with ID: {transcript_id}")
         
         # Poll for completion
         while True:
@@ -242,13 +255,19 @@ def transcribe_with_assemblyai_api(audio_path: str, language: str):
                 headers=headers
             )
             
-            status = response.json()["status"]
+            if response.status_code != 200:
+                raise Exception(f"Status check failed: {response.status_code} - {response.text}")
+            
+            transcript_data = response.json()
+            status = transcript_data["status"]
             
             if status == "completed":
-                transcript_data = response.json()
+                print("AssemblyAI: Transcription completed successfully")
                 break
             elif status == "error":
-                raise Exception(f"AssemblyAI transcription failed: {response.json().get('error', 'Unknown error')}")
+                raise Exception(f"AssemblyAI transcription failed: {transcript_data.get('error', 'Unknown error')}")
+            else:
+                print(f"AssemblyAI: Status: {status}, waiting...")
             
             time.sleep(2)
         
@@ -599,11 +618,11 @@ async def transcribe_video(
             else:
                 # Use local model
                 result = model.transcribe(
-                    audio_path, 
-                    language=language if language != "auto" else None,
+            audio_path, 
+            language=language if language != "auto" else None,
                     task="transcribe",
                     verbose=False  # Reduce console output
-                )
+        )
             print(f"Transcription completed. Found {len(result.get('segments', []))} segments")
         except Exception as whisper_error:
             print(f"Whisper transcription error: {whisper_error}")
