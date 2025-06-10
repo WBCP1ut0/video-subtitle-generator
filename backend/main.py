@@ -67,9 +67,8 @@ def get_whisper_model():
         print("Using Google Cloud Speech-to-Text API (memory efficient)")
         return "google_speech_api"
     elif use_free_api:
-        # Use dummy transcription temporarily - this ensures the app works
-        print("Using dummy transcription for testing - full pipeline working!")
-        return "dummy_transcription"
+        print("Using free Google Web Speech API (memory efficient)")
+        return "free_google_speech"
     
     # Emergency fallback for testing (creates dummy transcription)
     print("Using emergency fallback (dummy transcription for testing)")
@@ -761,29 +760,66 @@ def extract_audio(video_path: str) -> str:
     """Extract audio from video using FFmpeg"""
     audio_path = video_path.rsplit('.', 1)[0] + '_audio.wav'
     
+    print(f"Extracting audio from: {video_path}")
+    print(f"Output audio path: {audio_path}")
+    
+    # Check if input video exists
+    if not os.path.exists(video_path):
+        raise Exception(f"Video file does not exist: {video_path}")
+    
+    video_size = os.path.getsize(video_path)
+    print(f"Video file size: {video_size} bytes")
+    
+    if video_size == 0:
+        raise Exception("Video file is empty")
+    
     try:
         # First try with standard settings
-        (
+        print("Attempting audio extraction with standard settings...")
+        result = (
             ffmpeg
             .input(video_path)
-            .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000')
+            .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000', f='wav')
             .overwrite_output()
-            .run(quiet=True, capture_stdout=True, capture_stderr=True)
+            .run(capture_stdout=True, capture_stderr=True)
         )
-        return audio_path
+        
+        # Check if audio file was created and has content
+        if os.path.exists(audio_path):
+            audio_size = os.path.getsize(audio_path)
+            print(f"Audio extraction successful! Size: {audio_size} bytes")
+            
+            if audio_size > 44:  # WAV header is 44 bytes minimum
+                return audio_path
+            else:
+                print("Audio file too small, trying alternative method...")
+                raise ffmpeg.Error("Audio file too small")
+        else:
+            raise ffmpeg.Error("Audio file not created")
         
     except ffmpeg.Error as e:
+        print(f"Standard extraction failed: {e}")
+        print("Trying alternative extraction method...")
+        
         # Try with more compatible settings as fallback
         try:
-            (
+            result = (
                 ffmpeg
                 .input(video_path)
-                .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000', strict='experimental')
+                .output(audio_path, acodec='pcm_s16le', ac=1, ar='16000', f='wav', strict='experimental')
                 .overwrite_output()
-                .run(quiet=True, capture_stdout=True, capture_stderr=True)
+                .run(capture_stdout=True, capture_stderr=True)
             )
-            return audio_path
+            
+            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 44:
+                audio_size = os.path.getsize(audio_path)
+                print(f"Alternative extraction successful! Size: {audio_size} bytes")
+                return audio_path
+            else:
+                raise Exception("Alternative extraction also failed to produce valid audio")
+                
         except ffmpeg.Error as e2:
+            print(f"Both extraction methods failed. FFmpeg error: {e2}")
             raise Exception(f"Audio extraction failed: {e2}")
 
 def create_srt_file(subtitles: List[dict], language: str) -> str:
