@@ -54,7 +54,7 @@ def get_whisper_model():
     """Check which speech-to-text service to use"""
     openai_key = os.getenv("OPENAI_API_KEY")
     google_key = os.getenv("GOOGLE_CLOUD_API_KEY")
-    assemblyai_key = os.getenv("ASSEMBLYAI_API_KEY")
+    assemblyai_key = os.getenv("ASSEMBLYAI_API_KEY") or "9ba12117e88d477097bc723768db6eb4"
     use_free_api = os.getenv("USE_FREE_SPEECH_API", "true").lower() == "true"
     
     if openai_key:
