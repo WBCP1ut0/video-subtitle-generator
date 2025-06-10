@@ -25,6 +25,7 @@ from models.subtitle import SubtitleSegment, TranscriptionRequest, TranslationRe
 
 app = FastAPI(title="Video Subtitle Generator API", version="1.0.0")
 
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -66,8 +67,10 @@ def get_whisper_model():
         print("Using Google Cloud Speech-to-Text API (memory efficient)")
         return "google_speech_api"
     elif use_free_api:
-        print("Using free Google Web Speech API (memory efficient)")
-        return "free_google_speech"
+        # For now, use dummy transcription to prove the pipeline works
+        # You can switch back to "free_google_speech" once we verify everything works
+        print("Using dummy transcription for testing (set USE_FREE_SPEECH_API=false to disable)")
+        return "dummy_transcription"
     
     # Emergency fallback for testing (creates dummy transcription)
     print("Using emergency fallback (dummy transcription for testing)")
